@@ -1,0 +1,425 @@
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 1   
+
+
+C51 COMPILER V9.52.0.0, COMPILATION OF MODULE C51
+OBJECT MODULE PLACED IN c51.OBJ
+COMPILER INVOKED BY: C:\Keil\C51\BIN\C51.EXE c51.c BROWSE DEBUG OBJECTEXTEND TABS(2)
+
+line level    source
+
+   1          #include <math.h>
+   2          // #include "HC89F0541.h"
+   3          #include "reg51.h"
+   4          #include "HC_DEFINE.H"
+   5          #include <stdio.h>
+   6          #include <stdlib.h>
+   7          
+   8          /******************************************************************
+   9           * Network Configuration - customized per network 
+  10           ******************************************************************/
+  11          #define PatternCount  10
+  12          #define InputNodes    7
+  13          #define HiddenNodes   8
+  14          #define OutputNodes   4
+  15          
+  16          //const int PatternCount = Pattern_Count;
+  17          //const int InputNodes = Input_Nodes;
+  18          //const int HiddenNodes = Hidden_Nodes;
+  19          //const int OutputNodes = Output_Nodes;
+  20          const float LearningRate = 0.3;
+  21          const float Momentum = 0.9;
+  22          const float InitialWeightMax = 0.5;
+  23          const float Success = 0.1;//0.0004;
+  24          
+  25          typedef ux8 byte;
+  26          
+  27          const byte Input[PatternCount][InputNodes] = {
+  28            { 1, 1, 1, 1, 1, 1, 0 },  // 0
+  29            { 0, 1, 1, 0, 0, 0, 0 },  // 1
+  30            { 1, 1, 0, 1, 1, 0, 1 },  // 2
+  31            { 1, 1, 1, 1, 0, 0, 1 },  // 3
+  32            { 0, 1, 1, 0, 0, 1, 1 },  // 4
+  33            { 1, 0, 1, 1, 0, 1, 1 },  // 5
+  34            { 0, 0, 1, 1, 1, 1, 1 },  // 6
+  35            { 1, 1, 1, 0, 0, 0, 0 },  // 7 
+  36            { 1, 1, 1, 1, 1, 1, 1 },  // 8
+  37            { 1, 1, 1, 0, 0, 1, 1 }   // 9
+  38          }; 
+  39          
+  40          const byte Target[PatternCount][OutputNodes] = {
+  41            { 0, 0, 0, 0 },  
+  42            { 0, 0, 0, 1 }, 
+  43            { 0, 0, 1, 0 }, 
+  44            { 0, 0, 1, 1 }, 
+  45            { 0, 1, 0, 0 }, 
+  46            { 0, 1, 0, 1 }, 
+  47            { 0, 1, 1, 0 }, 
+  48            { 0, 1, 1, 1 }, 
+  49            { 1, 0, 0, 0 }, 
+  50            { 1, 0, 0, 1 } 
+  51          };
+  52          
+  53          typedef int (*func1)(int);
+  54          typedef int (*func2)(const char*, int) reentrant;
+  55          typedef int (*func3)(const char*, float) reentrant;
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 2   
+
+  56          
+  57          typedef struct S {
+  58            func1 begin;
+  59            func2 println;// = printf;
+  60            func2 print;// = printf;
+  61            func3 printf;// = printf;
+  62            
+  63          }s_t;
+  64          
+  65          s_t Serial;
+  66          
+  67          void Uart_SendByte(unsigned char buf)
+  68          {
+  69   1        SCON &=~ 0x10;        //??UART1??
+  70   1        SBUF = buf;         //??8?????
+  71   1        while(!(SCON & 0x02));
+  72   1        SCON &=~ 0x02;        //?????????
+  73   1        SCON |= 0x10;       //UART1????
+  74   1      }
+  75          
+  76          char putchar(char c)
+  77          {
+  78   1        Uart_SendByte(c);
+  79   1        return c;
+  80   1      }
+  81          
+  82          int sendmsg(const char* str, float d){
+  83   1        printf(str, d);
+  84   1      
+  85   1        return 1;
+  86   1      }
+  87          
+  88          /******************************************************************
+  89           * End Network Configuration
+  90           ******************************************************************/
+  91          
+  92          
+  93          xdata int i, j, p, q, r;
+  94          xdata int ReportEvery1000;
+  95          xdata int RandomizedIndex[PatternCount];
+  96          xdata long  TrainingCycle;
+  97          xdata float Rando;
+  98          xdata float Error;
+  99          xdata float Accum;
+ 100          
+ 101          
+ 102          xdata float Hidden[HiddenNodes];
+ 103          xdata float Output[OutputNodes];
+ 104          xdata float HiddenWeights[InputNodes+1][HiddenNodes];
+ 105          xdata float OutputWeights[HiddenNodes+1][OutputNodes];
+ 106          xdata float HiddenDelta[HiddenNodes];
+ 107          xdata float OutputDelta[OutputNodes];
+ 108          xdata float ChangeHiddenWeights[InputNodes+1][HiddenNodes];
+ 109          xdata float ChangeOutputWeights[HiddenNodes+1][OutputNodes];
+ 110          
+ 111          
+ 112          int random(int r){
+ 113   1        return rand() % r;
+ 114   1      }
+ 115          void toTerminal()
+ 116          {
+ 117   1      
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 3   
+
+ 118   1        for( p = 0 ; p < PatternCount ; p++ ) { 
+ 119   2          Serial.println("\n"); 
+ 120   2          Serial.print ("  Training Pattern: %d ", p);
+ 121   2          //Serial.println (p);      
+ 122   2          Serial.print ("  Input ");
+ 123   2          for( i = 0 ; i < InputNodes ; i++ ) {
+ 124   3            Serial.print ("%d", Input[p][i]);
+ 125   3            Serial.print (" ");
+ 126   3          }
+ 127   2          Serial.print ("  Target ");
+ 128   2          for( i = 0 ; i < OutputNodes ; i++ ) {
+ 129   3            Serial.print ("%d", Target[p][i]);
+ 130   3            Serial.print (" ");
+ 131   3          }
+ 132   2      /******************************************************************
+ 133   2      * Compute hidden layer activations
+ 134   2      ******************************************************************/
+ 135   2      
+ 136   2          for( i = 0 ; i < HiddenNodes ; i++ ) {    
+ 137   3            Accum = HiddenWeights[InputNodes][i] ;
+ 138   3            for( j = 0 ; j < InputNodes ; j++ ) {
+ 139   4              Accum += Input[p][j] * HiddenWeights[j][i] ;
+ 140   4            }
+ 141   3            Hidden[i] = 1.0/(1.0 + exp(-Accum)) ;
+ 142   3          }
+ 143   2      
+ 144   2      /******************************************************************
+ 145   2      * Compute output layer activations and calculate errors
+ 146   2      ******************************************************************/
+ 147   2      
+ 148   2          for( i = 0 ; i < OutputNodes ; i++ ) {    
+ 149   3            Accum = OutputWeights[HiddenNodes][i] ;
+ 150   3            for( j = 0 ; j < HiddenNodes ; j++ ) {
+ 151   4              Accum += Hidden[j] * OutputWeights[j][i] ;
+ 152   4            }
+ 153   3            Output[i] = 1.0/(1.0 + exp(-Accum)) ; 
+ 154   3          }
+ 155   2          Serial.print ("  Output ");
+ 156   2          for( i = 0 ; i < OutputNodes ; i++ ) {       
+ 157   3            Serial.printf ("%f", Output[i]);
+ 158   3            Serial.print (" ");
+ 159   3          }
+ 160   2        }
+ 161   1      
+ 162   1      
+ 163   1      }
+ 164          
+ 165          void predict(u8 *input)
+ 166          {
+ 167   1      /******************************************************************
+ 168   1      * Compute hidden layer activations
+ 169   1      ******************************************************************/
+ 170   1      
+ 171   1          for( i = 0 ; i < HiddenNodes ; i++ ) {    
+ 172   2            Accum = HiddenWeights[InputNodes][i] ;
+ 173   2            for( j = 0 ; j < InputNodes ; j++ ) {
+ 174   3              Accum += input[j] * HiddenWeights[j][i] ;
+ 175   3            }
+ 176   2            Hidden[i] = 1.0/(1.0 + exp(-Accum)) ;
+ 177   2          }
+ 178   1      
+ 179   1      /******************************************************************
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 4   
+
+ 180   1      * Compute output layer activations and calculate errors
+ 181   1      ******************************************************************/
+ 182   1      
+ 183   1          for( i = 0 ; i < OutputNodes ; i++ ) {    
+ 184   2            Accum = OutputWeights[HiddenNodes][i] ;
+ 185   2            for( j = 0 ; j < HiddenNodes ; j++ ) {
+ 186   3              Accum += Hidden[j] * OutputWeights[j][i] ;
+ 187   3            }
+ 188   2            Output[i] = 1.0/(1.0 + exp(-Accum)) ; 
+ 189   2          Output[i] = Output[i] > 0.8 ? 1:0;
+ 190   2          }
+ 191   1          Serial.print ("result: ");
+ 192   1          for( i = 0 ; i < OutputNodes ; i++ ) {       
+ 193   2            Serial.printf ("%f", Output[i]);
+ 194   2            Serial.print (" ");
+ 195   2          }
+ 196   1          Serial.print ("\n");
+ 197   1      }
+ 198          
+ 199          void setup(){
+ 200   1      
+ 201   1        Serial.begin = (9600);
+ 202   1        Serial.println = sendmsg;
+ 203   1        Serial.print = sendmsg;
+ 204   1        Serial.printf = sendmsg;
+*** WARNING C182 IN LINE 204 OF c51.c: pointer to different objects
+ 205   1        //randomSeed(analogRead(3));
+ 206   1        ReportEvery1000 = 1;
+ 207   1        for( p = 0 ; p < PatternCount ; p++ ) {    
+ 208   2          RandomizedIndex[p] = p ;
+ 209   2        }
+ 210   1      }  
+ 211          
+ 212          void main(){
+ 213   1      
+ 214   1        setup();
+ 215   1      
+ 216   1      /******************************************************************
+ 217   1      * Initialize HiddenWeights and ChangeHiddenWeights 
+ 218   1      ******************************************************************/
+ 219   1      
+ 220   1        for( i = 0 ; i < HiddenNodes ; i++ ) {    
+ 221   2          for( j = 0 ; j <= InputNodes ; j++ ) { 
+ 222   3            ChangeHiddenWeights[j][i] = 0.0 ;
+ 223   3            Rando = (float)(random(100))/100;
+ 224   3            HiddenWeights[j][i] = 2.0 * ( Rando - 0.5 ) * InitialWeightMax ;
+ 225   3          }
+ 226   2        }
+ 227   1      /******************************************************************
+ 228   1      * Initialize OutputWeights and ChangeOutputWeights
+ 229   1      ******************************************************************/
+ 230   1      
+ 231   1        for( i = 0 ; i < OutputNodes ; i ++ ) {    
+ 232   2          for( j = 0 ; j <= HiddenNodes ; j++ ) {
+ 233   3            ChangeOutputWeights[j][i] = 0.0 ;  
+ 234   3            Rando = (float)(random(100))/100;        
+ 235   3            OutputWeights[j][i] = 2.0 * ( Rando - 0.5 ) * InitialWeightMax ;
+ 236   3          }
+ 237   2        }
+ 238   1        Serial.println("Initial/Untrained Outputs: ");
+ 239   1        toTerminal();
+ 240   1      /******************************************************************
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 5   
+
+ 241   1      * Begin training 
+ 242   1      ******************************************************************/
+ 243   1      
+ 244   1        for( TrainingCycle = 1 ; TrainingCycle < 2147483647 ; TrainingCycle++) {    
+ 245   2      
+ 246   2      /******************************************************************
+ 247   2      * Randomize order of training patterns
+ 248   2      ******************************************************************/
+ 249   2      
+ 250   2          for( p = 0 ; p < PatternCount ; p++) {
+ 251   3            q = random(PatternCount);
+ 252   3            r = RandomizedIndex[p] ; 
+ 253   3            RandomizedIndex[p] = RandomizedIndex[q] ; 
+ 254   3            RandomizedIndex[q] = r ;
+ 255   3          }
+ 256   2          Error = 0.0 ;
+ 257   2      /******************************************************************
+ 258   2      * Cycle through each training pattern in the randomized order
+ 259   2      ******************************************************************/
+ 260   2          for( q = 0 ; q < PatternCount ; q++ ) {    
+ 261   3            p = RandomizedIndex[q];
+ 262   3      
+ 263   3      /******************************************************************
+ 264   3      * Compute hidden layer activations
+ 265   3      ******************************************************************/
+ 266   3      
+ 267   3            for( i = 0 ; i < HiddenNodes ; i++ ) {    
+ 268   4              Accum = HiddenWeights[InputNodes][i] ;
+ 269   4              for( j = 0 ; j < InputNodes ; j++ ) {
+ 270   5                Accum += Input[p][j] * HiddenWeights[j][i] ;
+ 271   5              }
+ 272   4              Hidden[i] = 1.0/(1.0 + exp(-Accum)) ;
+ 273   4            }
+ 274   3      
+ 275   3      /******************************************************************
+ 276   3      * Compute output layer activations and calculate errors
+ 277   3      ******************************************************************/
+ 278   3      
+ 279   3            for( i = 0 ; i < OutputNodes ; i++ ) {    
+ 280   4              Accum = OutputWeights[HiddenNodes][i] ;
+ 281   4              for( j = 0 ; j < HiddenNodes ; j++ ) {
+ 282   5                Accum += Hidden[j] * OutputWeights[j][i] ;
+ 283   5              }
+ 284   4              Output[i] = 1.0/(1.0 + exp(-Accum)) ;   
+ 285   4              OutputDelta[i] = (Target[p][i] - Output[i]) * Output[i] * (1.0 - Output[i]) ;   
+ 286   4              Error += 0.5 * (Target[p][i] - Output[i]) * (Target[p][i] - Output[i]) ;
+ 287   4            }
+ 288   3      
+ 289   3      /******************************************************************
+ 290   3      * Backpropagate errors to hidden layer
+ 291   3      ******************************************************************/
+ 292   3      
+ 293   3            for( i = 0 ; i < HiddenNodes ; i++ ) {    
+ 294   4              Accum = 0.0 ;
+ 295   4              for( j = 0 ; j < OutputNodes ; j++ ) {
+ 296   5                Accum += OutputWeights[i][j] * OutputDelta[j] ;
+ 297   5              }
+ 298   4              HiddenDelta[i] = Accum * Hidden[i] * (1.0 - Hidden[i]) ;
+ 299   4            }
+ 300   3      
+ 301   3      
+ 302   3      /******************************************************************
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 6   
+
+ 303   3      * Update Inner-->Hidden Weights
+ 304   3      ******************************************************************/
+ 305   3      
+ 306   3      
+ 307   3            for( i = 0 ; i < HiddenNodes ; i++ ) {     
+ 308   4              ChangeHiddenWeights[InputNodes][i] = LearningRate * HiddenDelta[i] + Momentum * ChangeHiddenWeight
+             -s[InputNodes][i] ;
+ 309   4              HiddenWeights[InputNodes][i] += ChangeHiddenWeights[InputNodes][i] ;
+ 310   4              for( j = 0 ; j < InputNodes ; j++ ) { 
+ 311   5                ChangeHiddenWeights[j][i] = LearningRate * Input[p][j] * HiddenDelta[i] + Momentum * ChangeHidde
+             -nWeights[j][i];
+ 312   5                HiddenWeights[j][i] += ChangeHiddenWeights[j][i] ;
+ 313   5              }
+ 314   4            }
+ 315   3      
+ 316   3      /******************************************************************
+ 317   3      * Update Hidden-->Output Weights
+ 318   3      ******************************************************************/
+ 319   3      
+ 320   3            for( i = 0 ; i < OutputNodes ; i ++ ) {    
+ 321   4              ChangeOutputWeights[HiddenNodes][i] = LearningRate * OutputDelta[i] + Momentum * ChangeOutputWeigh
+             -ts[HiddenNodes][i] ;
+ 322   4              OutputWeights[HiddenNodes][i] += ChangeOutputWeights[HiddenNodes][i] ;
+ 323   4              for( j = 0 ; j < HiddenNodes ; j++ ) {
+ 324   5                ChangeOutputWeights[j][i] = LearningRate * Hidden[j] * OutputDelta[i] + Momentum * ChangeOutputW
+             -eights[j][i] ;
+ 325   5                OutputWeights[j][i] += ChangeOutputWeights[j][i] ;
+ 326   5              }
+ 327   4            }
+ 328   3          }
+ 329   2      
+ 330   2      /******************************************************************
+ 331   2      * Every 1000 cycles send data to terminal for display
+ 332   2      ******************************************************************/
+ 333   2          ReportEvery1000 = ReportEvery1000 - 1;
+ 334   2          if (ReportEvery1000 == 0)
+ 335   2          {
+ 336   3            Serial.println("\n"); 
+ 337   3            Serial.println("\n"); 
+ 338   3            Serial.print ("TrainingCycle: %d",TrainingCycle );
+ 339   3            //Serial.print (TrainingCycle);
+ 340   3            Serial.printf ("  Error = %f", Error);
+ 341   3            //Serial.println (Error, 5);
+ 342   3      
+ 343   3            toTerminal();
+ 344   3      
+ 345   3            if (TrainingCycle==1)
+ 346   3            {
+ 347   4              ReportEvery1000 = 999;
+ 348   4            }
+ 349   3            else
+ 350   3            {
+ 351   4              ReportEvery1000 = 1000;
+ 352   4            }
+ 353   3          }    
+ 354   2      
+ 355   2      
+ 356   2      /******************************************************************
+ 357   2      * If error rate is less than pre-determined threshold then end
+ 358   2      ******************************************************************/
+ 359   2      
+ 360   2          if( Error < Success ) break ;  
+C51 COMPILER V9.52.0.0   C51                                                               09/16/2020 02:04:05 PAGE 7   
+
+ 361   2        }
+ 362   1        Serial.println("\n");
+ 363   1        Serial.println("\n"); 
+ 364   1        Serial.print ("TrainingCycle: %d", TrainingCycle);
+ 365   1        //Serial.print (TrainingCycle);
+ 366   1        Serial.printf ("  Error = %f", Error);
+ 367   1       // Serial.println (Error, 5);
+ 368   1      
+ 369   1        toTerminal();
+ 370   1      
+ 371   1        Serial.println ("\n");  
+ 372   1        Serial.println ("\n");
+ 373   1        Serial.println ("Training Set Solved! ");
+ 374   1        Serial.println ("--------"); 
+ 375   1        Serial.println ("\n");
+ 376   1        Serial.println ("\n");  
+ 377   1        ReportEvery1000 = 1;
+ 378   1        
+ 379   1        
+ 380   1      /******************************************************************
+ 381   1      * from a 7 segments input data predict the value
+ 382   1      ******************************************************************/
+ 383   1        predict(&Input[3]);
+ 384   1      }
+ 385          
+
+
+MODULE INFORMATION:   STATIC OVERLAYABLE
+   CODE SIZE        =   6761    ----
+   CONSTANT SIZE    =    162    ----
+   XDATA SIZE       =   1054    ----
+   PDATA SIZE       =   ----    ----
+   DATA SIZE        =     28       5
+   IDATA SIZE       =   ----    ----
+   BIT SIZE         =   ----    ----
+END OF MODULE INFORMATION.
+
+
+C51 COMPILATION COMPLETE.  1 WARNING(S),  0 ERROR(S)
